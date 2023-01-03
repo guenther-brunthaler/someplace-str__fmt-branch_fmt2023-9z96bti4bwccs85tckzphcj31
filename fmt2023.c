@@ -32,12 +32,12 @@ struct fmt2023_ctx {
 
 static void fmt2023_expand(struct fmt2023_ctx *o, char const *format) {
    int trigger, no_write= o->no_write;
-   struct insertion_sequence *insertions;
+   struct insertion_sequence *insertions= o->insertions;
    /* Consider the terminating null character to be part of the format string.
     * This automatically terminates the current output string once all of the
     * format string's bytes have been processed. */
    size_t remaining= strlen(format) + 1;
-   if (!(trigger= o->cmd_introducer) && (insertions= o->insertions)) {
+   if (!(trigger= o->cmd_introducer) && insertions) {
       trigger= o->cmd_introducer= *insertions->name;
    }
    while (remaining) {
@@ -76,7 +76,7 @@ static void fmt2023_expand(struct fmt2023_ctx *o, char const *format) {
             /* Append prefix of unprocessed part of the format string up to
              * the next possible insertion sequence at <source>. */
             append_literally_until_source:
-            bytes= format + remaining - source;
+            bytes= source - format; source= format;
             format+= bytes; remaining-= bytes;
             goto append_bytes;
          }
@@ -112,24 +112,28 @@ static int fmt2023_worker(
                   *saveloc= o->outpos;
                }
                break;
-            case '\f':
-               cmd= va_arg(*o->args, char const *);
-               fmt2023_expand(o, cmd);
-               break;
             case '\n':
                nsq->name= va_arg(*o->args, char const *);
                nsq->expansion= o->outpos;
+               nsq->expansion_bytecount= 0;
                goto register_insertion;
+            case '\f':
+               cmd= va_arg(*o->args, char const *);
+               fmt2023_expand(o, cmd);
+               o->insertions->expansion_bytecount=
+                  o->outpos - 1 - o->insertions->expansion
+               ;
+               break;
             default:
                nsq->name= cmd;
                nsq->expansion= va_arg(*o->args, void *);
-               register_insertion:
-               nsq->name_bytecount= strlen(nsq->name);
                nsq->expansion_bytecount=
                   o->next_size_known
                   ? (o->next_size_known= 0 , o->next_size)
                   : strlen(nsq->expansion)
                ;
+               register_insertion:
+               nsq->name_bytecount= strlen(nsq->name);
                nsq->older= o->insertions;
                o->insertions= nsq;
                return 1;
@@ -175,24 +179,21 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * need to be a null terminated string, but can be anyting binary. Think of
  * "void *" as a mnemonic.
  *
+ * "\n", <name>, "\f", <format>: Create a new insertion sequence <name> by
+ * expanding format string <format>. The result will *then* be appended at the
+ * current output position as a null-terminated string. If <name> should
+ * already be referenced during the expansion of <format>, it will expand to
+ * an empty string. Use of "\f" in any other constellation than explained here
+ * will result in undefined behavior.
+ *
  * "\r", <addr>: Write the current output address to a pointer variable with
  * address <addr>. This allows to store the starting addresses of the next
  * string to be formatted, avoiding the need to search for null bytes in the
- * buffer as string separators within the formatted result. In case of "no
- * write" mode, the written pointer values have no significance and must be
- * ignored. Think of "report" as a mnemonic.
- *
- * "\n" <name>: Remember the current output position as the starting address
- * of a new insertion sequence <name>. This has pretty much the same affect as
- * specifying a normal insertion sequence, except that the buffer address is
- * implicitly provided. Can be also be combined with a preceding "\v"
- * sequence. Think of "new" as a mnemonic.
- *
- * "\f", <format>: Expand the format string <format>, appending the null
- * terminated result at the current output position. Move the new output
- * position one byte after the terminating null byte. Only insertion sequences
- * already defined so far can be referenced from within the format string.
- * Think of "format" as a mnemonic.
+ * buffer as string separators within the formatted result. "\r" is frequently
+ * used after a series of "\f" instructions in order to communicate the
+ * address of the final output string to the caller. In case of "no write"
+ * mode, the written pointer values have no significance and must be ignored.
+ * Think of "report" as a mnemonic.
  *
  * <name>, <expansion>: The normal way to specify an insertion sequence.
  * <name> must be a null-terminated string identifying the sequence. Actually
@@ -207,8 +208,8 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * rather "<name1>", "<name2>", but both styles cannot be mixed within the
  * same function invocation. There is no escape mechanism by default. But it
  * is easy to provide one. One could define an insertion sequence "%%" which
- * expands to a single "%". Then one could write "The expression '%1 %%' means
- * %1 percent of the quantity %2.".
+ * expands to a single "%". Then one could write "The expression '%1 %% of %2'
+ * means %1 percent of the quantity %2.".
  *
  * Text after the special-function characters like "\v" is allowed but will be
  * ignored. It could be used to pass hints to a human translator, for
@@ -256,18 +257,57 @@ int main(void) {
    size_t needed, bsz= sizeof initial_static_buffer;
    char const *error= 0;
    int t;
-   for (t= 1; t; ++t) {
+   char pstr[]= {"PASCAL uses length-prefixed strings"};
+   (void)memmove(pstr + 1, pstr, sizeof pstr - 1); *pstr= sizeof pstr - 1;
+   for (t= 8; t; --t) {
       char const *result;
       while (
          (
             result= buffer
-            , needed= t == 1 ? sfmt2023(
+            , needed= t == 8 ? sfmt2023(
                buffer, bsz, NULL, "Hello, world!\n"
+            ) : t == 7 ? sfmt2023(
+               buffer, bsz, "&", "world", NULL, "Ho-ho-ho, hello, &!\n"
+            ) : t == 6 ? sfmt2023(
+               buffer, bsz
+               ,  "${func}", "fmt2023"
+               ,  "\v", *pstr, "${string}", pstr + 1
+               ,  NULL, "${func}() expands '${string}' as a PASCAL string!\n"
+            ) : t == 5 ? sfmt2023(
+                  buffer, bsz
+               ,  "%1", "2000-04-01"
+               ,  "%2", "Mr. April Fool"
+               ,  "%3", "I always know everything"
+               ,  NULL, "On %1, %2 said '%3'.\n"
+            ) : t == 4 ? sfmt2023(
+                  buffer, bsz
+               ,  "%%", "%"
+               ,  "%1", "25"
+               ,  "%2", "1000"
+               ,  NULL
+               ,  "The expression '%1 %% of %2'"
+               " means %1 percent of the quantity %2.\n"
+            ) : t == 3 ? sfmt2023(
+                  buffer, bsz
+               ,  "{day}", "24"
+               ,  "{month}", "12"
+               ,  "{year}", "2000"
+               ,  "\n", "{date}", "\f", "{year}-{month}-{day}"
+               ,  "\r", &result
+               ,  "{who}", "Santa Claus"
+               ,  "{msg}", "Ho, ho, ho!"
+               ,  NULL, "On {date}, {who} said '{msg}'.\n"
             ) : t == 2 ? sfmt2023(
-               buffer, bsz, "&", "world", NULL, "Hello, &!\n"
+               buffer, bsz
+               , "IDIOTS", "Developers"
+               , "Infamous U*X-hater mendaciously"
+               , "big OpenSource friend honestly"
+               , NULL
+               ,  "'IDIOTS, IDIOTS, IDIOTS!'"
+                  ", Steve the Infamous U*X-hater mendaciously cheered.\n"
             ) : (
                /* Special case: Can we handle to output nothing at all? */
-               t= -1 , sfmt2023(buffer, bsz, NULL, "")
+               t= 1 , sfmt2023(buffer, bsz, NULL, "")
             )
          ) >= bsz
       ) {
