@@ -145,7 +145,7 @@ static int fmt2023_worker(
 /* Recursion helper, using minimal stack frame. */
 static void fmt2023_recurser(struct fmt2023_ctx *o) {
    struct insertion_sequence i;
-   while (fmt2023_worker(o, &i)) fmt2023_recurser(o);
+   if (fmt2023_worker(o, &i)) fmt2023_recurser(o);
 }
 
 /* Expands one or more format strings into a given memory buffer. All
@@ -167,28 +167,28 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * The variable arguments control the formatting operation. All arguments
  * come as pairs:
  *
- * 0, <final_format>: Stop processing the argument list and use <final_format>
- * as the last format string to be processed.
+ * NULL, <final_format>: Stop processing the argument list and use
+ * <final_format> as the last format string to be processed.
  *
- * "\v...", <bytes>: Set size_t value <bytes> as an override for the next
+ * "\v", <bytes>: Set size_t value <bytes> as an override for the next
  * insertion string definition. This means that insertion sequence does not
  * need to be a null terminated string, but can be anyting binary. Think of
  * "void *" as a mnemonic.
  *
- * "\r...", <addr>: Write the current output address to a pointer variable
- * with address <addr>. This allows to store the starting addresses of the
- * next string to be formatted, avoiding the need to search for null bytes
- * in the buffer as string separators within the formatted result. In case
- * of "no write" mode, the written pointer values have no significance and
- * must be ignored. Think of "report" as a mnemonic.
+ * "\r", <addr>: Write the current output address to a pointer variable with
+ * address <addr>. This allows to store the starting addresses of the next
+ * string to be formatted, avoiding the need to search for null bytes in the
+ * buffer as string separators within the formatted result. In case of "no
+ * write" mode, the written pointer values have no significance and must be
+ * ignored. Think of "report" as a mnemonic.
  *
- * "\n..." <name>: Remember the current output position as the starting address
+ * "\n" <name>: Remember the current output position as the starting address
  * of a new insertion sequence <name>. This has pretty much the same affect as
  * specifying a normal insertion sequence, except that the buffer address is
- * implicitly provided. Can be also be combined with a preceding "\v" sequence.
- * Think of "new" as a mnemonic.
+ * implicitly provided. Can be also be combined with a preceding "\v"
+ * sequence. Think of "new" as a mnemonic.
  *
- * "\f...", <format>: Expand the format string <format>, appending the null
+ * "\f", <format>: Expand the format string <format>, appending the null
  * terminated result at the current output position. Move the new output
  * position one byte after the terminating null byte. Only insertion sequences
  * already defined so far can be referenced from within the format string.
@@ -219,29 +219,35 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * sequence names defined so far are checked whether one matches the prefix
  * of the yet-unprocessed rest of the format string. If so, its associated
  * expansion string contents are appended to the output buffer. Otherwise, the
- * format introduction character loses ist special meaning and is copied to
+ * format introduction character loses its special meaning and is copied to
  * the output buffer literally.
  *
  * No sophisticated search algorithm is used to locate the named insertion
  * sequences. A simple linear search backwards is done instead. This means
  * that names defined later will be found faster. And in case of duplicate
- * names, only the last instance of the name definied so far will be used.
+ * names, only the last instance of the name defined so far will be found.
  * This can even be exploited for "redefining" names if multiple format
  * strings are used. */
-static size_t fmt2023(char *buffer, size_t buffer_size, ...) {
+static size_t vfmt2023(char *buffer, size_t buffer_size, va_list args) {
    struct fmt2023_ctx o;
-   va_list args;
    o.args= &args;
    o.no_write= !(o.outpos= buffer);
    o.next_size_known= 0;
    o.insertions= 0;
    o.cmd_introducer= '\0';
    o.stop= buffer + buffer_size;
-   va_start(args, buffer_size);
    fmt2023_recurser(&o);
-   va_end(args);
    assert(o.outpos >= buffer);
    return (size_t)(o.outpos - buffer);
+}
+
+static size_t sfmt2023(char *buffer, size_t buffer_size, ...) {
+   size_t result;
+   va_list args;
+   va_start(args, buffer_size);
+   result= vfmt2023(buffer, buffer_size, args);
+   va_end(args);
+   return result;
 }
 
 int main(void) {
@@ -249,43 +255,57 @@ int main(void) {
    char *buffer= initial_static_buffer;
    size_t needed, bsz= sizeof initial_static_buffer;
    char const *error= 0;
-   while (
-      (
-         needed= fmt2023(
-            buffer, bsz, NULL, "Hello, world!\n"
-         )
-      ) >= bsz
-   ) {
-      {
-         size_t pfib, fib;
-         pfib= fib= 1;
-         while (fib < needed) {
-            size_t t= fib; fib+= pfib; pfib= t;
-         }
-         needed= fib;
-      }
-      {
-         void *nbuf;
-         if (
-            !(
-               nbuf= buffer == initial_static_buffer
-               ? malloc(needed)
-               : realloc(buffer, needed)
+   int t;
+   for (t= 1; t; ++t) {
+      char const *result;
+      while (
+         (
+            result= buffer
+            , needed= t == 1 ? sfmt2023(
+               buffer, bsz, NULL, "Hello, world!\n"
+            ) : t == 2 ? sfmt2023(
+               buffer, bsz, "&", "world", NULL, "Hello, &!\n"
+            ) : (
+               /* Special case: Can we handle to output nothing at all? */
+               t= -1 , sfmt2023(buffer, bsz, NULL, "")
             )
-         ) {
-            error= "Out of memory!";
-            goto failure;
+         ) >= bsz
+      ) {
+         {
+            size_t pfib, fib;
+            pfib= fib= 1;
+            while (fib < needed) {
+               size_t t= fib; fib+= pfib; pfib= t;
+            }
+            needed= fib;
          }
-         buffer= nbuf; bsz= needed;
+         {
+            void *nbuf;
+            if (
+               !(
+                  nbuf= buffer == initial_static_buffer
+                  ? malloc(needed)
+                  : realloc(buffer, needed)
+               )
+            ) {
+               error= "Out of memory!";
+               goto failure;
+            }
+            buffer= nbuf; bsz= needed;
+         }
       }
-   }
-   assert(needed >= 1);
-   --needed;
-   if (fwrite(buffer, 1, needed, stdout) != needed) {
-      error= "Write error!";
-      failure:
-      (void)fputs(error, stderr);
-      (void)fputc('\n', stderr);
+      assert(needed >= 1);
+      --needed;
+      assert(buffer[needed] == '\0');
+      assert(result >= buffer);
+      assert(result <= buffer + needed);
+      needed= buffer + needed - result;
+      if (fwrite(result, 1, needed, stdout) != needed) {
+         error= "Write error!";
+         failure:
+         (void)fputs(error, stderr);
+         (void)fputc('\n', stderr);
+      }
    }
    if (buffer != initial_static_buffer) free(buffer);
    return error ? EXIT_FAILURE : EXIT_SUCCESS;
