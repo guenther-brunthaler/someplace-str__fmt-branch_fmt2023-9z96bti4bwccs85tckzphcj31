@@ -3,11 +3,11 @@
  * I have had so many of those ideas, one worse than the other, that I started
  * naming them by the year when the next brainstorm hit me.
  *
- * Version 2023.2
+ * Version 2023.3
  * Copyright (c) 2023 Guenther Brunthaler. All rights reserved.
  *
  * This source file is free software.
- * Distribution is permitted under the terms of the GPLv3. */
+ * Distribution is permitted under the terms of the LGPLv3. */
 
 #include <stdio.h>
 #include <stdlib.h>
