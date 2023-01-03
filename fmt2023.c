@@ -27,13 +27,16 @@ struct fmt2023_ctx {
    char const *stop;
    char *outpos;
    struct insertion_sequence *insertions;
-   va_list args;
+   va_list *args;
 };
 
 static void fmt2023_expand(struct fmt2023_ctx *o, char const *format) {
    int trigger, no_write= o->no_write;
    struct insertion_sequence *insertions;
-   size_t remaining= strlen(format);
+   /* Consider the terminating null character to be part of the format string.
+    * This automatically terminates the current output string once all of the
+    * format string's bytes have been processed. */
+   size_t remaining= strlen(format) + 1;
    if (!(trigger= o->cmd_introducer) && (insertions= o->insertions)) {
       trigger= o->cmd_introducer= *insertions->name;
    }
@@ -82,10 +85,8 @@ static void fmt2023_expand(struct fmt2023_ctx *o, char const *format) {
       /* No further insertion sequence can possibly exist in the format
        * string.
        *
-       * Append the rest of the format string literally, including the
-       * terminating null character. This automatically terminates the current
-       * output string. */
-      source= format; bytes= remaining + 1; remaining= 0;
+       * Append the rest of the format string literally. */
+      source= format; bytes= remaining; remaining= 0;
       /* Append bytes to the result string (only virtually in case of
        * 'no_write' mode). */
       append_bytes:
@@ -99,41 +100,44 @@ static int fmt2023_worker(
    struct fmt2023_ctx *o, struct insertion_sequence *nsq
 ) {
    for (;;) {
-      char const *cmd= va_arg(o->args, char const *);
-      switch (*cmd) {
-         case '\v':
-            o->next_size= va_arg(o->args, size_t); o->next_size_known= 1;
-            break;
-         case '\r':
-            {
-               void **saveloc= va_arg(o->args, void **);
-               *saveloc= o->outpos;
-            }
-            break;
-         case '\0':
-            fmt2023_expand(o, cmd);
-            return 0;
-         case '\f':
-            cmd= va_arg(o->args, char const *);
-            fmt2023_expand(o, cmd);
-            break;
-         case '\n':
-            nsq->name= va_arg(o->args, char const *);
-            nsq->expansion= o->outpos;
-            goto register_insertion;
-         default:
-            nsq->name= cmd;
-            nsq->expansion= va_arg(o->args, void *);
-            register_insertion:
-            nsq->name_bytecount= strlen(nsq->name);
-            nsq->expansion_bytecount=
-               o->next_size_known
-               ? (o->next_size_known= 0 , o->next_size)
-               : strlen(nsq->expansion)
-            ;
-            nsq->older= o->insertions;
-            o->insertions= nsq;
-            return 1;
+      char const *cmd;
+      if (cmd= va_arg(*o->args, char const *)) {
+         switch (*cmd) {
+            case '\v':
+               o->next_size= va_arg(*o->args, size_t); o->next_size_known= 1;
+               break;
+            case '\r':
+               {
+                  void **saveloc= va_arg(*o->args, void **);
+                  *saveloc= o->outpos;
+               }
+               break;
+            case '\f':
+               cmd= va_arg(*o->args, char const *);
+               fmt2023_expand(o, cmd);
+               break;
+            case '\n':
+               nsq->name= va_arg(*o->args, char const *);
+               nsq->expansion= o->outpos;
+               goto register_insertion;
+            default:
+               nsq->name= cmd;
+               nsq->expansion= va_arg(*o->args, void *);
+               register_insertion:
+               nsq->name_bytecount= strlen(nsq->name);
+               nsq->expansion_bytecount=
+                  o->next_size_known
+                  ? (o->next_size_known= 0 , o->next_size)
+                  : strlen(nsq->expansion)
+               ;
+               nsq->older= o->insertions;
+               o->insertions= nsq;
+               return 1;
+         }
+      } else {
+         cmd= va_arg(*o->args, char const *);
+         fmt2023_expand(o, cmd);
+         return 0;
       }
    }
 }
@@ -226,15 +230,18 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * strings are used. */
 static size_t fmt2023(char *buffer, size_t buffer_size, ...) {
    struct fmt2023_ctx o;
+   va_list args;
+   o.args= &args;
    o.no_write= !(o.outpos= buffer);
    o.next_size_known= 0;
    o.insertions= 0;
    o.cmd_introducer= '\0';
    o.stop= buffer + buffer_size;
-   va_start(o.args, buffer_size);
+   va_start(args, buffer_size);
    fmt2023_recurser(&o);
-   va_end(o.args);
-   return (size_t)(o.stop - o.outpos);
+   va_end(args);
+   assert(o.outpos >= buffer);
+   return (size_t)(o.outpos - buffer);
 }
 
 int main(void) {
@@ -245,7 +252,7 @@ int main(void) {
    while (
       (
          needed= fmt2023(
-            buffer, bsz, 0, "Test.\n"
+            buffer, bsz, NULL, "Hello, world!\n"
          )
       ) >= bsz
    ) {
@@ -269,10 +276,12 @@ int main(void) {
             error= "Out of memory!";
             goto failure;
          }
+         buffer= nbuf; bsz= needed;
       }
    }
    assert(needed >= 1);
-   if (fwrite(buffer, 1, needed - 1, stdout) != needed) {
+   --needed;
+   if (fwrite(buffer, 1, needed, stdout) != needed) {
       error= "Write error!";
       failure:
       (void)fputs(error, stderr);
