@@ -3,7 +3,7 @@
  * I have had so many of those ideas, one worse than the other, that I started
  * naming them by the year when the next brainstorm hit me.
  *
- * Version 2023.3
+ * Version 2023.3.1
  * Copyright (c) 2023 Guenther Brunthaler. All rights reserved.
  *
  * This source file is free software.
@@ -341,6 +341,7 @@ int main(void) {
       assert(result <= buffer + needed);
       needed= buffer + needed - result;
       if (fwrite(result, 1, needed, stdout) != needed) {
+         write_error:
          error= "Write error!";
          failure:
          (void)fputs(error, stderr);
@@ -348,5 +349,6 @@ int main(void) {
       }
    }
    if (buffer != initial_static_buffer) free(buffer);
+   if (fflush(0)) goto write_error;
    return error ? EXIT_FAILURE : EXIT_SUCCESS;
 }
