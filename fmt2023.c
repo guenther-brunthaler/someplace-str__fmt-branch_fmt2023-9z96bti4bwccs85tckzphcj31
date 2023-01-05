@@ -3,7 +3,7 @@
  * I have had so many of those ideas, one worse than the other, that I started
  * naming them by the year when the next brainstorm hit me.
  *
- * Version 2023.3.1
+ * Version 2023.5
  * Copyright (c) 2023 Guenther Brunthaler. All rights reserved.
  *
  * This source file is free software.
@@ -165,8 +165,9 @@ static void fmt2023_recurser(struct fmt2023_ctx *o) {
  * been written if the buffer was large enough. This number includes the
  * trailing null byte. Think of "strlen(buffer) + 1" in case of success.
  *
- * If the return value is less than <buffer_size>, then everything has been
- * written to the buffer and the formatting operation has thus been successful.
+ * As long as the return value is not larger than <buffer_size>, then
+ * everything has been written to the buffer and the formatting operation has
+ * thus been successful.
  *
  * The variable arguments control the formatting operation. All arguments
  * come as pairs:
@@ -309,7 +310,7 @@ int main(void) {
                /* Special case: Can we handle to output nothing at all? */
                t= 1 , sfmt2023(buffer, bsz, NULL, "")
             )
-         ) >= bsz
+         ) > bsz
       ) {
          {
             size_t pfib, fib;
